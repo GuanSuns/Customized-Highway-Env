@@ -21,8 +21,8 @@ class ControlledVehicle(Vehicle):
 
     """Characteristic time"""
     TAU_ACC = 0.6  # [s]
-    TAU_HEADING = 0.2  # [s]
-    TAU_LATERAL = 0.6  # [s]
+    TAU_HEADING = 10  # default 0.2, [s]
+    TAU_LATERAL = 2.  # default 0.6, [s]
 
     TAU_PURSUIT = 0.5 * TAU_HEADING  # [s]
     KP_A = 1 / TAU_ACC
@@ -110,6 +110,7 @@ class ControlledVehicle(Vehicle):
         super().act(action)
 
     def _get_steering_range(self, action=None):
+        """
         if isinstance(action, str) and ('LANE_LEFT_' in action or 'LANE_RIGHT_' in action):
             degree_acc = int(action.split('_')[-1])
             ACCs = [0.05, 0.1, 0.3, 0.6, 1.0]
@@ -117,8 +118,10 @@ class ControlledVehicle(Vehicle):
             self.last_max_steering = max_range
             return max_range
         else:
-            # use the default value
             return self.last_max_steering
+        """
+        # use the default value
+        return self.last_max_steering
 
     def follow_road(self) -> None:
         """At the end of a lane, automatically switch to a next one."""
@@ -129,6 +132,7 @@ class ControlledVehicle(Vehicle):
                                                                  np_random=self.road.np_random)
 
     def _get_kp_lateral(self, action=None):
+        """
         if isinstance(action, str) and ('LANE_LEFT_' in action or 'LANE_RIGHT_' in action):
             degree_acc = int(action.split('_')[-1])
             ACCs = [0.05, 0.1, 0.3, 0.6, 1.0]
@@ -136,13 +140,16 @@ class ControlledVehicle(Vehicle):
             self.last_kp_lateral = kp_lateral
             return kp_lateral
         else:
-            # use the default value
             return self.last_kp_later
+        """
+        # use the default value
+        return self.last_kp_later
 
     def steering_control(self, target_lane_index, action=None):
         target_lane = self.road.network.get_lane(target_lane_index)
         lane_coords = target_lane.local_coordinates(self.position)
         lane_next_coords = lane_coords[0] + self.speed * self.TAU_PURSUIT
+        # print(lane_coords, lane_next_coords)
         lane_future_heading = target_lane.heading_at(lane_next_coords)
 
         # Lateral position control
@@ -159,6 +166,7 @@ class ControlledVehicle(Vehicle):
         return float(steering_angle)
 
     def _get_kp_a(self, action=None):
+        """
         if isinstance(action, str) and ('FASTER_' in action or 'SLOWER_' in action):
             degree_acc = int(action.split('_')[-1])
             ACCs = [0.1, 0.3, 0.6, 0.8]
@@ -166,8 +174,10 @@ class ControlledVehicle(Vehicle):
             self.last_kp_a = kp_a
             return kp_a
         else:
-            # use the default value
             return self.last_kp_a
+        """
+        # use the default value
+        return self.last_kp_a
 
     def speed_control(self, target_speed, action=None):
         return self._get_kp_a(action=action) * (target_speed - self.speed)
