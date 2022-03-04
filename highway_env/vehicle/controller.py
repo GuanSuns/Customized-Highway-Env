@@ -28,7 +28,7 @@ class ControlledVehicle(Vehicle):
     KP_A = 1 / TAU_ACC
     KP_HEADING = 1 / TAU_HEADING
     KP_LATERAL = 1 / TAU_LATERAL  # [1/s]
-    MAX_STEERING_ANGLE = np.pi / 3  # [rad]
+    MAX_STEERING_ANGLE = np.pi / 2  # [rad]
     DELTA_SPEED = 5  # [m/s]
 
     def __init__(self,
@@ -43,6 +43,9 @@ class ControlledVehicle(Vehicle):
         self.target_lane_index = target_lane_index or self.lane_index
         self.target_speed = target_speed or self.speed
         self.route = route
+        self.last_kp_a = self.KP_A
+        self.last_max_steering = self.MAX_STEERING_ANGLE
+        self.last_kp_later = self.KP_LATERAL
 
     @classmethod
     def create_from(cls, vehicle: "ControlledVehicle") -> "ControlledVehicle":
@@ -85,25 +88,37 @@ class ControlledVehicle(Vehicle):
         :param action: a high-level action
         """
         self.follow_road()
-        if action == "FASTER":
+        if isinstance(action, str) and "FASTER" in action:
             self.target_speed += self.DELTA_SPEED
-        elif action == "SLOWER":
+        elif isinstance(action, str) and "SLOWER" in action:
             self.target_speed -= self.DELTA_SPEED
-        elif action == "LANE_RIGHT":
+        elif isinstance(action, str) and "LANE_RIGHT" in str(action):
             _from, _to, _id = self.target_lane_index
             target_lane_index = _from, _to, np.clip(_id + 1, 0, len(self.road.network.graph[_from][_to]) - 1)
             if self.road.network.get_lane(target_lane_index).is_reachable_from(self.position):
                 self.target_lane_index = target_lane_index
-        elif action == "LANE_LEFT":
+        elif isinstance(action, str) and "LANE_LEFT" in str(action):
             _from, _to, _id = self.target_lane_index
             target_lane_index = _from, _to, np.clip(_id - 1, 0, len(self.road.network.graph[_from][_to]) - 1)
             if self.road.network.get_lane(target_lane_index).is_reachable_from(self.position):
                 self.target_lane_index = target_lane_index
 
-        action = {"steering": self.steering_control(self.target_lane_index),
-                  "acceleration": self.speed_control(self.target_speed)}
-        action['steering'] = np.clip(action['steering'], -self.MAX_STEERING_ANGLE, self.MAX_STEERING_ANGLE)
+        action = {"steering": self.steering_control(self.target_lane_index, action=action),
+                  "acceleration": self.speed_control(self.target_speed, action=action)}
+        max_steering_angle = self._get_steering_range(action=action)
+        action['steering'] = np.clip(action['steering'], -max_steering_angle, max_steering_angle)
         super().act(action)
+
+    def _get_steering_range(self, action=None):
+        if isinstance(action, str) and ('LANE_LEFT_' in action or 'LANE_RIGHT_' in action):
+            degree_acc = int(action.split('_')[-1])
+            ACCs = [0.05, 0.1, 0.3, 0.6, 1.0]
+            max_range = self.KP_LATERAL * ACCs[degree_acc]
+            self.last_max_steering = max_range
+            return max_range
+        else:
+            # use the default value
+            return self.last_max_steering
 
     def follow_road(self) -> None:
         """At the end of a lane, automatically switch to a next one."""
@@ -113,25 +128,25 @@ class ControlledVehicle(Vehicle):
                                                                  position=self.position,
                                                                  np_random=self.road.np_random)
 
-    def steering_control(self, target_lane_index: LaneIndex) -> float:
-        """
-        Steer the vehicle to follow the center of an given lane.
+    def _get_kp_lateral(self, action=None):
+        if isinstance(action, str) and ('LANE_LEFT_' in action or 'LANE_RIGHT_' in action):
+            degree_acc = int(action.split('_')[-1])
+            ACCs = [0.05, 0.1, 0.3, 0.6, 1.0]
+            kp_lateral = self.KP_LATERAL * ACCs[degree_acc]
+            self.last_kp_lateral = kp_lateral
+            return kp_lateral
+        else:
+            # use the default value
+            return self.last_kp_later
 
-        1. Lateral position is controlled by a proportional controller yielding a lateral speed command
-        2. Lateral speed command is converted to a heading reference
-        3. Heading is controlled by a proportional controller yielding a heading rate command
-        4. Heading rate command is converted to a steering angle
-
-        :param target_lane_index: index of the lane to follow
-        :return: a steering wheel angle command [rad]
-        """
+    def steering_control(self, target_lane_index, action=None):
         target_lane = self.road.network.get_lane(target_lane_index)
         lane_coords = target_lane.local_coordinates(self.position)
         lane_next_coords = lane_coords[0] + self.speed * self.TAU_PURSUIT
         lane_future_heading = target_lane.heading_at(lane_next_coords)
 
         # Lateral position control
-        lateral_speed_command = - self.KP_LATERAL * lane_coords[1]
+        lateral_speed_command = - self._get_kp_lateral(action=action) * lane_coords[1]
         # Lateral speed to heading
         heading_command = np.arcsin(np.clip(lateral_speed_command / utils.not_zero(self.speed), -1, 1))
         heading_ref = lane_future_heading + np.clip(heading_command, -np.pi/4, np.pi/4)
@@ -143,16 +158,19 @@ class ControlledVehicle(Vehicle):
         steering_angle = np.clip(steering_angle, -self.MAX_STEERING_ANGLE, self.MAX_STEERING_ANGLE)
         return float(steering_angle)
 
-    def speed_control(self, target_speed: float) -> float:
-        """
-        Control the speed of the vehicle.
+    def _get_kp_a(self, action=None):
+        if isinstance(action, str) and ('FASTER_' in action or 'SLOWER_' in action):
+            degree_acc = int(action.split('_')[-1])
+            ACCs = [0.1, 0.3, 0.6, 0.8]
+            kp_a = 1 / ACCs[degree_acc]
+            self.last_kp_a = kp_a
+            return kp_a
+        else:
+            # use the default value
+            return self.last_kp_a
 
-        Using a simple proportional controller.
-
-        :param target_speed: the desired speed
-        :return: an acceleration command [m/s2]
-        """
-        return self.KP_A * (target_speed - self.speed)
+    def speed_control(self, target_speed, action=None):
+        return self._get_kp_a(action=action) * (target_speed - self.speed)
 
     def get_routes_at_intersection(self) -> List[Route]:
         """Get the list of routes that can be followed at the next intersection."""
@@ -313,3 +331,109 @@ class MDPVehicle(ControlledVehicle):
                 if (t % int(trajectory_timestep / dt)) == 0:
                     states.append(copy.deepcopy(v))
         return states
+
+
+class MDPVehicle_V1(ControlledVehicle):
+    DEFAULT_TARGET_SPEEDS = np.linspace(0, 20, 20)
+
+    def __init__(self,
+                 road: Road,
+                 position: List[float],
+                 heading: float = 0,
+                 speed: float = 0,
+                 target_lane_index: Optional[LaneIndex] = None,
+                 target_speed: Optional[float] = None,
+                 target_speeds: Optional[Vector] = None,
+                 route: Optional[Route] = None) -> None:
+        super().__init__(road, position, heading, speed, target_lane_index, target_speed, route)
+        self.target_speeds = np.array(target_speeds) if target_speeds is not None else self.DEFAULT_TARGET_SPEEDS
+        self.speed_index = self.speed_to_index(self.target_speed)
+        self.target_speed = self.index_to_speed(self.speed_index)
+
+    def act(self, action: Union[dict, str] = None) -> None:
+        """
+        Perform a high-level action.
+
+        - If the action is a speed change, choose speed from the allowed discrete range.
+        - Else, forward action to the ControlledVehicle handler.
+
+        :param action: a high-level action
+        """
+        if isinstance(action, str) and 'FASTER' in action:
+            degree = int(action.split('_')[-1]) if '_' in action else 0
+            self.speed_index = self.speed_to_index(self.speed) + 1 + degree
+        if isinstance(action, str) and 'SLOWER' in action:
+            degree = int(action.split('_')[-1]) if '_' in action else 0
+            self.speed_index = self.speed_to_index(self.speed) - 1 - degree
+        else:
+            super().act(action)
+            return
+        self.speed_index = int(np.clip(self.speed_index, 0, self.target_speeds.size - 1))
+        self.target_speed = self.index_to_speed(self.speed_index)
+        super().act()
+
+    def index_to_speed(self, index: int) -> float:
+        """
+        Convert an index among allowed speeds to its corresponding speed
+
+        :param index: the speed index []
+        :return: the corresponding speed [m/s]
+        """
+        return self.target_speeds[index]
+
+    def speed_to_index(self, speed: float) -> int:
+        """
+        Find the index of the closest speed allowed to a given speed.
+
+        Assumes a uniform list of target speeds to avoid searching for the closest target speed
+
+        :param speed: an input speed [m/s]
+        :return: the index of the closest speed allowed []
+        """
+        x = (speed - self.target_speeds[0]) / (self.target_speeds[-1] - self.target_speeds[0])
+        return np.int(np.clip(np.round(x * (self.target_speeds.size - 1)), 0, self.target_speeds.size - 1))
+
+    @classmethod
+    def speed_to_index_default(cls, speed: float) -> int:
+        """
+        Find the index of the closest speed allowed to a given speed.
+
+        Assumes a uniform list of target speeds to avoid searching for the closest target speed
+
+        :param speed: an input speed [m/s]
+        :return: the index of the closest speed allowed []
+        """
+        x = (speed - cls.DEFAULT_TARGET_SPEEDS[0]) / (cls.DEFAULT_TARGET_SPEEDS[-1] - cls.DEFAULT_TARGET_SPEEDS[0])
+        return np.int(np.clip(
+            np.round(x * (cls.DEFAULT_TARGET_SPEEDS.size - 1)), 0, cls.DEFAULT_TARGET_SPEEDS.size - 1))
+
+    @classmethod
+    def get_speed_index(cls, vehicle: Vehicle) -> int:
+        return getattr(vehicle, "speed_index", cls.speed_to_index_default(vehicle.speed))
+
+    def predict_trajectory(self, actions: List, action_duration: float, trajectory_timestep: float, dt: float) \
+            -> List[ControlledVehicle]:
+        """
+        Predict the future trajectory of the vehicle given a sequence of actions.
+
+        :param actions: a sequence of future actions.
+        :param action_duration: the duration of each action.
+        :param trajectory_timestep: the duration between each save of the vehicle state.
+        :param dt: the timestep of the simulation
+        :return: the sequence of future states
+        """
+        states = []
+        v = copy.deepcopy(self)
+        t = 0
+        for action in actions:
+            v.act(action)  # High-level decision
+            for _ in range(int(action_duration / dt)):
+                t += 1
+                v.act()  # Low-level control action
+                v.step(dt)
+                if (t % int(trajectory_timestep / dt)) == 0:
+                    states.append(copy.deepcopy(v))
+        return states
+
+
+

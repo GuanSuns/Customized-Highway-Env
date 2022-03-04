@@ -7,7 +7,7 @@ from gym.utils import seeding
 import numpy as np
 
 from highway_env import utils
-from highway_env.envs.common.action import action_factory, Action, DiscreteMetaAction, DiscreteAction, ActionType
+from highway_env.envs.common.action import action_factory, Action, DiscreteMetaAction, DiscreteAction, ActionType, MetaAction
 from highway_env.envs.common.observation import observation_factory, ObservationType
 from highway_env.envs.common.finite_mdp import finite_mdp
 from highway_env.envs.common.graphics import EnvViewer
@@ -17,8 +17,8 @@ from highway_env.vehicle.kinematics import Vehicle
 
 Observation = np.ndarray
 
-class AbstractEnv(gym.Env):
 
+class AbstractEnv(gym.Env):
     """
     A generic environment for various tasks involving a vehicle driving on a road.
 
@@ -30,10 +30,10 @@ class AbstractEnv(gym.Env):
     action_type: ActionType
     _monitor: Optional[gym.wrappers.Monitor]
     metadata = {
-        'render.modes': ['human', 'rgb_array'],
+        'render.modes': ['human', 'rgb_array', 'cv2'],
     }
 
-    PERCEPTION_DISTANCE = 5.0 * Vehicle.MAX_SPEED
+    PERCEPTION_DISTANCE = 10.0 * Vehicle.MAX_SPEED
     """The maximum distance of any vehicle present in the observation [m]"""
 
     def __init__(self, config: dict = None) -> None:
@@ -257,7 +257,6 @@ class AbstractEnv(gym.Env):
         self.enable_auto_render = True
 
         self.viewer.display()
-
         if not self.viewer.offscreen:
             self.viewer.handle_events()
         if mode == 'rgb_array':
@@ -286,6 +285,8 @@ class AbstractEnv(gym.Env):
         """
         if isinstance(self.action_type, DiscreteAction):
             return [i for i in range(self.action_type.space().n)]
+        if isinstance(self.action_type, MetaAction):
+            return self.get_meta_available_actions()
         if not isinstance(self.action_type, DiscreteMetaAction):
             raise ValueError("Only discrete meta-actions can be unavailable.")
         actions = [self.action_type.actions_indexes['IDLE']]
@@ -302,6 +303,25 @@ class AbstractEnv(gym.Env):
             actions.append(self.action_type.actions_indexes['FASTER'])
         if self.vehicle.speed_index > 0 and self.action_type.longitudinal:
             actions.append(self.action_type.actions_indexes['SLOWER'])
+        return actions
+
+    def get_meta_available_actions(self):
+        actions = [self.action_type.actions_indexes['IDLE']]
+        for l_index in self.road.network.side_lanes(self.vehicle.lane_index):
+            if l_index[2] < self.vehicle.lane_index[2] \
+                    and self.road.network.get_lane(l_index).is_reachable_from(self.vehicle.position):
+                for a_idx in range(5):
+                    actions.append(self.action_type.actions_indexes[f'LANE_LEFT_{a_idx}'])
+            if l_index[2] > self.vehicle.lane_index[2] \
+                    and self.road.network.get_lane(l_index).is_reachable_from(self.vehicle.position):
+                for a_idx in range(5):
+                    actions.append(self.action_type.actions_indexes[f'LANE_RIGHT_{a_idx}'])
+        if self.vehicle.speed_index < self.vehicle.target_speeds.size - 1:
+            for a_idx in range(4):
+                actions.append(self.action_type.actions_indexes[f'FASTER_{a_idx}'])
+        if self.vehicle.speed_index > 0:
+            for a_idx in range(4):
+                actions.append(self.action_type.actions_indexes[f'SLOWER_{a_idx}'])
         return actions
 
     def set_monitor(self, monitor: gym.wrappers.Monitor):

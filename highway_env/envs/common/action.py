@@ -8,7 +8,7 @@ from highway_env import utils
 from highway_env.utils import Vector
 from highway_env.vehicle.dynamics import BicycleVehicle
 from highway_env.vehicle.kinematics import Vehicle
-from highway_env.vehicle.controller import MDPVehicle
+from highway_env.vehicle.controller import MDPVehicle, MDPVehicle_V1
 
 if TYPE_CHECKING:
     from highway_env.envs.common.abstract import AbstractEnv
@@ -224,12 +224,14 @@ class DiscreteMetaAction(ActionType):
     def space(self) -> spaces.Space:
         return spaces.Discrete(len(self.actions))
 
+    def print_action_info(self):
+        print(f'[INFO] all actions: {self.actions}')
+
     @property
     def vehicle_class(self) -> Callable:
         return functools.partial(MDPVehicle, target_speeds=self.target_speeds)
 
     def act(self, action: int) -> None:
-        print(type(self.controlled_vehicle))
         self.controlled_vehicle.act(self.actions[action])
 
 
@@ -259,6 +261,58 @@ class MultiAgentAction(ActionType):
             action_type.act(agent_action)
 
 
+class MetaAction(ActionType):
+
+    """
+    An discrete action space of meta-actions: lane changes, and cruise control set-point.
+    """
+
+    ACTIONS_ALL = {
+        0: 'LANE_LEFT_0',
+        1: 'LANE_LEFT_1',
+        2: 'LANE_LEFT_2',
+        3: 'LANE_LEFT_3',
+        4: 'LANE_LEFT_4',
+        5: 'IDLE',
+        6: 'LANE_RIGHT_0',
+        7: 'LANE_RIGHT_1',
+        8: 'LANE_RIGHT_2',
+        9: 'LANE_RIGHT_3',
+        10: 'LANE_RIGHT_4',
+        11: 'FASTER_0',
+        12: 'FASTER_1',
+        13: 'FASTER_2',
+        14: 'FASTER_3',
+        15: 'SLOWER_0',
+        16: 'SLOWER_1',
+        17: 'SLOWER_2',
+        18: 'SLOWER_3',
+    }
+
+    def __init__(self,
+                 env: 'AbstractEnv',
+                 **kwargs) -> None:
+        super().__init__(env)
+        self.longitudinal = True
+        self.lateral = True
+        self.target_speeds = MDPVehicle_V1.DEFAULT_TARGET_SPEEDS
+        self.actions = self.ACTIONS_ALL
+        self.actions_indexes = {v: k for k, v in self.actions.items()}
+
+    def space(self) -> spaces.Space:
+        return spaces.Discrete(len(self.actions))
+
+    def print_action_info(self):
+        print(f'[INFO] all actions: {self.actions}')
+
+    @property
+    def vehicle_class(self) -> Callable:
+        return functools.partial(MDPVehicle_V1, target_speeds=self.target_speeds)
+
+    def act(self, action: int) -> None:
+        self.controlled_vehicle.act(self.actions[action])
+
+
 def action_factory(env: 'AbstractEnv', config: dict) -> ActionType:
     if config["type"] == "ContinuousAction":
         return ContinuousAction(env, **config)
@@ -266,6 +320,8 @@ def action_factory(env: 'AbstractEnv', config: dict) -> ActionType:
         return DiscreteAction(env, **config)
     elif config["type"] == "DiscreteMetaAction":
         return DiscreteMetaAction(env, **config)
+    elif config["type"] == "MetaAction":
+        return MetaAction(env, **config)
     elif config["type"] == "MultiAgentAction":
         return MultiAgentAction(env, **config)
     else:

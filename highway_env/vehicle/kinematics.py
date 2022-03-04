@@ -26,7 +26,7 @@ class Vehicle(RoadObject):
     """ Range for random initial speeds [m/s] """
     MAX_SPEED = 40.
     """ Maximum reachable speed [m/s] """
-    HISTORY_SIZE = 30
+    HISTORY_SIZE = 10
     """ Length of the vehicle state history, for trajectory display"""
 
     def __init__(self,
@@ -143,8 +143,7 @@ class Vehicle(RoadObject):
         if self.road:
             self.lane_index = self.road.network.get_closest_lane_index(self.position, self.heading)
             self.lane = self.road.network.get_lane(self.lane_index)
-            if self.road.record_history:
-                self.history.appendleft(self.create_from(self))
+            self.history.appendleft(self.create_from(self))
 
     def predict_trajectory_constant_speed(self, times: np.ndarray) -> Tuple[List[np.ndarray], List[float]]:
         if self.prediction_type == 'zero_steering':
