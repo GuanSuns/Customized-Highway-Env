@@ -312,6 +312,12 @@ class MetaAction(ActionType):
     def act(self, action: int) -> None:
         self.controlled_vehicle.act(self.actions[action])
 
+    def get_name(self, action):
+        if action is not None:
+            return self.ACTIONS_ALL[action]
+        else:
+            return 'None'
+
 
 def action_factory(env: 'AbstractEnv', config: dict) -> ActionType:
     if config["type"] == "ContinuousAction":

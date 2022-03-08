@@ -43,9 +43,41 @@ class ControlledVehicle(Vehicle):
         self.target_lane_index = target_lane_index or self.lane_index
         self.target_speed = target_speed or self.speed
         self.route = route
-        self.last_kp_a = self.KP_A
-        self.last_max_steering = self.MAX_STEERING_ANGLE
-        self.last_kp_later = self.KP_LATERAL
+        # config
+        self.is_hard_coding = False
+        # parameters
+        self.tau_acc = self.TAU_ACC
+        self.tau_heading = self.TAU_HEADING
+        self.tau_lateral = self.TAU_LATERAL
+        self.tau_pursuit = self.TAU_PURSUIT
+        self.kp_a = self.KP_A
+        self.kp_heading = self.KP_HEADING
+        self.kp_lateral = self.KP_LATERAL
+        self.max_steering = self.MAX_STEERING_ANGLE
+
+    def hard_code_param(self, is_on, params):
+        self.is_hard_coding = is_on
+        self.tau_acc = self.tau_acc if 'tau_acc' not in params else params['tau_acc']
+        self.tau_lateral = self.tau_lateral if 'tau_lateral' not in params else params['tau_lateral']
+
+    def _set_control_params(self, action=None):
+        if self.is_hard_coding:
+            return
+        if isinstance(action, str) and ("FASTER_" in action or "SLOWER_" in action):
+            candidates = [0.8, 0.6, 0.3, 0.1]
+            degree = int(action.split('_')[-1])
+            self.tau_acc = candidates[degree]
+        if isinstance(action, str) and ("LANE_RIGHT_" in action or "LANE_LEFT_" in action):
+            candidates = [0.1, 0.5, 1.0, 2.0, 3.0]
+            degree = int(action.split('_')[-1])
+            self.tau_lateral = candidates[degree]
+
+    def _compute_control_params(self):
+        self.tau_pursuit = 0.5 * self.tau_heading  # [s]
+        self.kp_a = 1 / self.tau_acc
+        self.kp_heading = 1 / self.tau_heading
+        self.kp_lateral = 1 / self.tau_lateral  # [1/s]
+        self.max_steering = np.pi / 2  # [rad]
 
     @classmethod
     def create_from(cls, vehicle: "ControlledVehicle") -> "ControlledVehicle":
@@ -78,7 +110,7 @@ class ControlledVehicle(Vehicle):
             self.route = [self.lane_index]
         return self
 
-    def act(self, action: Union[dict, str] = None) -> None:
+    def act(self, action=None):
         """
         Perform a high-level action to change the desired lane or speed.
 
@@ -103,25 +135,12 @@ class ControlledVehicle(Vehicle):
             if self.road.network.get_lane(target_lane_index).is_reachable_from(self.position):
                 self.target_lane_index = target_lane_index
 
+        self._set_control_params(action)
+        self._compute_control_params()
         action = {"steering": self.steering_control(self.target_lane_index, action=action),
                   "acceleration": self.speed_control(self.target_speed, action=action)}
-        max_steering_angle = self._get_steering_range(action=action)
-        action['steering'] = np.clip(action['steering'], -max_steering_angle, max_steering_angle)
+        action['steering'] = np.clip(action['steering'], -self.max_steering, self.max_steering)
         super().act(action)
-
-    def _get_steering_range(self, action=None):
-        """
-        if isinstance(action, str) and ('LANE_LEFT_' in action or 'LANE_RIGHT_' in action):
-            degree_acc = int(action.split('_')[-1])
-            ACCs = [0.05, 0.1, 0.3, 0.6, 1.0]
-            max_range = self.KP_LATERAL * ACCs[degree_acc]
-            self.last_max_steering = max_range
-            return max_range
-        else:
-            return self.last_max_steering
-        """
-        # use the default value
-        return self.last_max_steering
 
     def follow_road(self) -> None:
         """At the end of a lane, automatically switch to a next one."""
@@ -131,55 +150,27 @@ class ControlledVehicle(Vehicle):
                                                                  position=self.position,
                                                                  np_random=self.road.np_random)
 
-    def _get_kp_lateral(self, action=None):
-        """
-        if isinstance(action, str) and ('LANE_LEFT_' in action or 'LANE_RIGHT_' in action):
-            degree_acc = int(action.split('_')[-1])
-            ACCs = [0.05, 0.1, 0.3, 0.6, 1.0]
-            kp_lateral = self.KP_LATERAL * ACCs[degree_acc]
-            self.last_kp_lateral = kp_lateral
-            return kp_lateral
-        else:
-            return self.last_kp_later
-        """
-        # use the default value
-        return self.last_kp_later
-
     def steering_control(self, target_lane_index, action=None):
         target_lane = self.road.network.get_lane(target_lane_index)
         lane_coords = target_lane.local_coordinates(self.position)
-        lane_next_coords = lane_coords[0] + self.speed * self.TAU_PURSUIT
+        lane_next_coords = lane_coords[0] + self.speed * self.tau_pursuit
         lane_future_heading = target_lane.heading_at(lane_next_coords)
 
         # Lateral position control
-        lateral_speed_command = - self._get_kp_lateral(action=action) * lane_coords[1]
+        lateral_speed_command = - self.kp_lateral * lane_coords[1]
         # Lateral speed to heading
         heading_command = np.arcsin(np.clip(lateral_speed_command / utils.not_zero(self.speed), -1, 1))
         heading_ref = lane_future_heading + np.clip(heading_command, -np.pi/4, np.pi/4)
         # Heading control
-        heading_rate_command = self.KP_HEADING * utils.wrap_to_pi(heading_ref - self.heading)
+        heading_rate_command = self.kp_heading * utils.wrap_to_pi(heading_ref - self.heading)
         # Heading rate to steering angle
         slip_angle = np.arcsin(np.clip(self.LENGTH / 2 / utils.not_zero(self.speed) * heading_rate_command, -1, 1))
         steering_angle = np.arctan(2 * np.tan(slip_angle))
-        steering_angle = np.clip(steering_angle, -self.MAX_STEERING_ANGLE, self.MAX_STEERING_ANGLE)
+        steering_angle = np.clip(steering_angle, -self.max_steering, self.max_steering)
         return float(steering_angle)
 
-    def _get_kp_a(self, action=None):
-        """
-        if isinstance(action, str) and ('FASTER_' in action or 'SLOWER_' in action):
-            degree_acc = int(action.split('_')[-1])
-            ACCs = [0.1, 0.3, 0.6, 0.8]
-            kp_a = 1 / ACCs[degree_acc]
-            self.last_kp_a = kp_a
-            return kp_a
-        else:
-            return self.last_kp_a
-        """
-        # use the default value
-        return self.last_kp_a
-
     def speed_control(self, target_speed, action=None):
-        return self._get_kp_a(action=action) * (target_speed - self.speed)
+        return self.kp_a * (target_speed - self.speed)
 
     def get_routes_at_intersection(self) -> List[Route]:
         """Get the list of routes that can be followed at the next intersection."""
