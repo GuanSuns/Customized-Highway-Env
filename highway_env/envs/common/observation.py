@@ -621,6 +621,32 @@ class LidarObservation(ObservationType):
         return np.array([np.cos(index * self.angle), np.sin(index * self.angle)])
 
 
+class RgbObservation(ObservationType):
+    def __init__(self, env: 'AbstractEnv',
+                 **kwargs) -> None:
+        super().__init__(env)
+        self.shape = (env.config['screen_height'], env.config['screen_width'], 3)
+        self.obs = np.zeros(self.shape)
+
+        # The viewer configuration can be different between this observation and env.render() (typically smaller)
+        viewer_config = env.config.copy()
+        viewer_config.update({
+            "offscreen_rendering": True
+        })
+        self.viewer = EnvViewer(env, config=viewer_config)
+
+    def space(self) -> spaces.Space:
+        return spaces.Box(shape=self.shape, low=0, high=255, dtype=np.uint8)
+
+    def observe(self) -> np.ndarray:
+        return self._render()
+
+    def _render(self) -> np.ndarray:
+        self.viewer.observer_vehicle = self.observer_vehicle
+        self.viewer.display()
+        return self.viewer.get_image()  # H x W x C
+
+
 def observation_factory(env: 'AbstractEnv', config: dict) -> ObservationType:
     if config["type"] == "TimeToCollision":
         return TimeToCollisionObservation(env, **config)
@@ -640,6 +666,8 @@ def observation_factory(env: 'AbstractEnv', config: dict) -> ObservationType:
         return TupleObservation(env, **config)
     elif config["type"] == "LidarObservation":
         return LidarObservation(env, **config)
+    elif config["type"] == "RgbObservation":
+        return RgbObservation(env, **config)
     elif config["type"] == "ExitObservation":
         return ExitObservation(env, **config)
     else:
